@@ -436,19 +436,8 @@ import {
   Space,
   Alert,
   message,
-  Divider,
-  Row,
-  Col,
-  Statistic,
-  Avatar
 } from 'antd';
-import {
-  SyncOutlined,
-  FilePdfOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  TeamOutlined
-} from '@ant-design/icons';
+import { SyncOutlined, DownloadOutlined } from '@ant-design/icons';
 
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -460,7 +449,7 @@ import autoTable from 'jspdf-autotable';
 import reportsAPI from '../api/reports';
 import adminAPI from '../api/admin';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 const { Option } = Select;
 
 const Reports = () => {
@@ -470,11 +459,10 @@ const Reports = () => {
   const [loading, setLoading] = useState(false);
   const [subjects, setSubjects] = useState([]);
   const [fetchingSubjects, setFetchingSubjects] = useState(false);
-  const [summary, setSummary] = useState({ total: 0, present: 0, absent: 0 });
 
-  // ================================
+  // --------------------------------
   // Fetch Subjects
-  // ================================
+  // --------------------------------
   useEffect(() => {
     fetchSubjects();
   }, []);
@@ -482,7 +470,7 @@ const Reports = () => {
   const fetchSubjects = async () => {
     try {
       setFetchingSubjects(true);
-      const students = await adminAPI.getStudents() || [];
+      const students = await adminAPI.getStudents();
 
       const uniqueSubjects = [
         ...new Set(students.flatMap(s => s.subjects || [])),
@@ -497,206 +485,193 @@ const Reports = () => {
     }
   };
 
-  // ================================
-  // Generate Report
-  // ================================
+  // --------------------------------
+  // Generate Attendance Report
+  // --------------------------------
   const fetchReport = async () => {
     if (!subject) {
-      message.warning('Please select a subject first');
+      message.warning('Please select a subject');
       return;
     }
 
     setLoading(true);
-
     try {
-      const [studentsResponse, presentResponse] = await Promise.all([
-        adminAPI.getStudents(),
-        reportsAPI.getAttendanceReport(subject, date)
-      ]);
+      // 1️⃣ Fetch all students
+      const students = await adminAPI.getStudents();
 
-      const students = Array.isArray(studentsResponse) ? studentsResponse : [];
-      const presentRecords = Array.isArray(presentResponse) ? presentResponse : [];
-
+      // 2️⃣ Filter students for selected subject
       const subjectStudents = students.filter(student =>
         (student.subjects || []).includes(subject)
       );
 
+      // 3️⃣ Fetch present attendance records
+      const presentRecords = await reportsAPI.getAttendanceReport(
+        subject,
+        date
+      );
+
+      // 4️⃣ Create lookup map
       const presentMap = {};
       presentRecords.forEach(record => {
-        if (record?.student_id) {
-          presentMap[record.student_id] = record;
-        }
+        presentMap[record.student_id] = record;
       });
 
+      // 5️⃣ Merge → PRESENT / ABSENT
       const mergedReport = subjectStudents.map(student => {
-        const attendance = presentMap[student.student_id];
+        const present = presentMap[student.student_id];
+
         return {
           student_id: student.student_id,
           full_name: student.full_name,
-          status: attendance ? 'PRESENT' : 'ABSENT',
-          first_detected_at: attendance?.first_detected_at || null,
+          status: present ? 'PRESENT' : 'ABSENT',
+          first_detected_at: present?.first_detected_at || null,
         };
       });
 
       setData(mergedReport);
-
-      const presentCount = mergedReport.filter(
-        r => r.status === 'PRESENT'
-      ).length;
-
-      setSummary({
-        total: mergedReport.length,
-        present: presentCount,
-        absent: mergedReport.length - presentCount
-      });
-
-      if (mergedReport.length === 0) {
-        message.info('No students found for this subject');
-      } else {
-        message.success('Report generated successfully');
-      }
-
     } catch (error) {
       console.error(error);
-      message.error('Failed to generate report');
+      message.error('Failed to generate attendance report');
     } finally {
       setLoading(false);
     }
   };
 
-  // ================================
-  // Export PDF
-  // ================================
-  const exportToPDF = () => {
-    if (data.length === 0) {
-      message.warning('No data to export');
-      return;
-    }
 
-    const doc = new jsPDF();
-    const timestamp = dayjs().format('DD/MM/YYYY HH:mm');
 
-    const attendanceRate =
-      summary.total > 0
-        ? ((summary.present / summary.total) * 100).toFixed(1)
-        : 0;
+  // --------------------------------
+// Export PDF
+// --------------------------------
+const exportToPDF = () => {
+  if (data.length === 0) {
+    message.warning('No data to export');
+    return;
+  }
 
-    // Header
-    doc.setFontSize(18);
-    doc.setTextColor(29, 78, 216);
-    doc.text('LINCOLN UNIVERSITY COLLEGE', 105, 15, { align: 'center' });
+  const doc = new jsPDF();
 
-    doc.setFontSize(10);
-    doc.setTextColor(100);
-    doc.text('OFFICIAL ATTENDANCE RECORD', 105, 22, { align: 'center' });
+  // -----------------------------
+  // Header
+  // -----------------------------
+  doc.setFontSize(16);
+  doc.text(
+    'Lincoln University College, Malaysia',
+    105,
+    15,
+    { align: 'center' }
+  );
 
-    doc.line(14, 25, 196, 25);
+  doc.setFontSize(11);
+  doc.text(`Subject : ${subject}`, 14, 30);
+  doc.text(`Date : ${date}`, 150, 30);
 
-    doc.setFontSize(11);
-    doc.setTextColor(0);
-    doc.text(`Subject: ${subject}`, 14, 35);
-    doc.text(`Date: ${dayjs(date).format('DD MMMM YYYY')}`, 14, 42);
+  // -----------------------------
+  // Attendance Table
+  // -----------------------------
+  autoTable(doc, {
+    startY: 40,
+    theme: 'grid',
+    head: [[
+      'Student Name',
+      'Student ID',
+      'Detected At',
+      'Status',
+    ]],
+    body: data.map(item => [
+      item.full_name,
+      item.student_id,
+      item.first_detected_at
+        ? dayjs.utc(item.first_detected_at).local().format('HH:mm:ss')
+        : '—',
+      item.status,
+    ]),
+    styles: {
+      fontSize: 10,
+      cellPadding: 3,
+    },
+    headStyles: {
+      fillColor: [22, 119, 255],
+      textColor: 255,
+    },
+  });
 
-    doc.text(`Generated: ${timestamp}`, 196, 35, { align: 'right' });
-    doc.text(`Attendance Rate: ${attendanceRate}%`, 196, 42, { align: 'right' });
+  // -----------------------------
+  // Footer: Instructor Signature + Generated By
+  // -----------------------------
+  const pageHeight = doc.internal.pageSize.height;
+  const marginBottom = 20; // space from bottom
 
-    autoTable(doc, {
-      startY: 50,
-      theme: 'grid',
-      head: [['#', 'Student Name', 'Student ID', 'Status', 'Time']],
-      body: data.map((item, index) => [
-        index + 1,
-        item.full_name,
-        item.student_id,
-        item.status,
-        item.first_detected_at
-          ? dayjs.utc(item.first_detected_at).local().format('hh:mm:ss A')
-          : '—'
-      ]),
-      headStyles: {
-        fillColor: [29, 78, 216],
-        textColor: 255,
-        fontStyle: 'bold'
-      },
-      didParseCell: (tableData) => {
-        if (tableData.column.index === 3) {
-          if (tableData.cell.text[0] === 'PRESENT') {
-            tableData.cell.styles.textColor = [22, 163, 74];
-          } else {
-            tableData.cell.styles.textColor = [220, 38, 38];
-          }
-        }
-      }
-    });
+  // Horizontal line for signature (bottom left)
+  const lineStartX = 14;
+  const lineEndX = 65;
+  const lineY = pageHeight - marginBottom;
+  doc.setLineWidth(0.5);
+  doc.line(lineStartX, lineY, lineEndX, lineY);
 
-    doc.save(`Attendance_Report_${subject}_${date}.pdf`);
-    message.success('PDF downloaded successfully');
-  };
+  // Signature text below the line
+  doc.setFontSize(10);
+  doc.text('Instructor Signature', lineStartX, lineY + 6);
 
-  // ================================
+  // "Generated by" text (centered above bottom margin)
+  doc.setFontSize(9);
+  doc.text(
+    'Generated by Lincoln Attendance Management System',
+    105,
+    pageHeight - 10,
+    { align: 'center' }
+  );
+
+  // -----------------------------
+  // Save PDF
+  // -----------------------------
+  doc.save(`attendance_${subject}_${date}.pdf`);
+};
+
+
+  // --------------------------------
   // Table Columns
-  // ================================
+  // --------------------------------
   const columns = [
     {
-      title: 'Student',
-      key: 'student',
-      render: (_, record) => (
-        <Space>
-          <Avatar
-            src={`https://api.dicebear.com/7.x/initials/svg?seed=${record.full_name}`}
-            size="small"
-          />
-          <div>
-            <Text strong>{record.full_name}</Text>
-            <br />
-            <Text type="secondary">{record.student_id}</Text>
-          </div>
-        </Space>
-      ),
+      title: 'Student ID',
+      dataIndex: 'student_id',
+      width: 120,
+    },
+    {
+      title: 'Student Name',
+      dataIndex: 'full_name',
     },
     {
       title: 'Status',
       dataIndex: 'status',
-      render: (status) => (
-        <Tag
-          color={status === 'PRESENT' ? 'success' : 'error'}
-          icon={
-            status === 'PRESENT'
-              ? <CheckCircleOutlined />
-              : <CloseCircleOutlined />
-          }
-        >
+      render: status => (
+        <Tag color={status === 'PRESENT' ? 'green' : 'red'}>
           {status}
         </Tag>
       ),
-      filters: [
-        { text: 'Present', value: 'PRESENT' },
-        { text: 'Absent', value: 'ABSENT' },
-      ],
-      onFilter: (value, record) => record.status === value,
     },
     {
-      title: 'Time Detected',
+      title: 'Detected At',
       dataIndex: 'first_detected_at',
-      render: (value) =>
+      render: value =>
         value
-          ? dayjs.utc(value).local().format('hh:mm:ss A')
+          ? dayjs.utc(value).local().format('HH:mm:ss')
           : '—',
     },
   ];
 
-  // ================================
+  // --------------------------------
   // UI
-  // ================================
+  // --------------------------------
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-      <Title level={2}>Attendance Intelligence Reports</Title>
+    <div>
+      <Title level={3}>Attendance Reports</Title>
 
-      <Card style={{ marginBottom: 30 }}>
-        <Row gutter={20}>
-          <Col span={8}>
+      <Card className="mb-6">
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <div className="flex flex-wrap gap-4">
             <Select
-              style={{ width: '100%' }}
+              style={{ width: 220 }}
               placeholder="Select Subject"
               value={subject}
               onChange={setSubject}
@@ -704,65 +679,48 @@ const Reports = () => {
               allowClear
             >
               {subjects.map(subj => (
-                <Option key={subj} value={subj}>{subj}</Option>
+                <Option key={subj} value={subj}>
+                  {subj}
+                </Option>
               ))}
             </Select>
-          </Col>
 
-          <Col span={8}>
             <DatePicker
-              style={{ width: '100%' }}
+              style={{ width: 200 }}
               value={dayjs(date)}
               onChange={(d, ds) => setDate(ds)}
               format="YYYY-MM-DD"
             />
-          </Col>
 
-          <Col span={8}>
-            <Space>
-              <Button
-                type="primary"
-                icon={<SyncOutlined />}
-                loading={loading}
-                onClick={fetchReport}
-              >
-                Generate
-              </Button>
+            <Button
+              type="primary"
+              icon={<SyncOutlined />}
+              loading={loading}
+              onClick={fetchReport}
+            >
+              Generate Report
+            </Button>
 
-              {data.length > 0 && (
-                <Button
-                  icon={<FilePdfOutlined />}
-                  onClick={exportToPDF}
-                >
+            {data.length > 0 && (
+              <>
+                {/* <Button icon={<DownloadOutlined />} onClick={exportToCSV}>
+                  Export CSV
+                </Button> */}
+                <Button icon={<DownloadOutlined />} onClick={exportToPDF}>
                   Export PDF
                 </Button>
-              )}
-            </Space>
-          </Col>
-        </Row>
+              </>
+            )}
+          </div>
 
-        <Divider />
-
-        <Alert
-          type="info"
-          showIcon
-          message="Select subject and date to generate report."
-        />
+          <Alert
+            type="info"
+            showIcon
+            message="Instructions"
+            description="Select a subject and date. Undetected students are marked as ABSENT."
+          />
+        </Space>
       </Card>
-
-      {data.length > 0 && (
-        <Row gutter={16} style={{ marginBottom: 20 }}>
-          <Col span={8}>
-            <Statistic title="Total" value={summary.total} prefix={<TeamOutlined />} />
-          </Col>
-          <Col span={8}>
-            <Statistic title="Present" value={summary.present} valueStyle={{ color: 'green' }} />
-          </Col>
-          <Col span={8}>
-            <Statistic title="Absent" value={summary.absent} valueStyle={{ color: 'red' }} />
-          </Col>
-        </Row>
-      )}
 
       <Table
         rowKey="student_id"
@@ -770,6 +728,30 @@ const Reports = () => {
         columns={columns}
         loading={loading}
         pagination={{ pageSize: 10 }}
+        summary={pageData => {
+          const total = pageData.length;
+          const present = pageData.filter(i => i.status === 'PRESENT').length;
+          const absent = total - present;
+
+          return (
+            <Table.Summary>
+              <Table.Summary.Row>
+                <Table.Summary.Cell colSpan={2}>
+                  <strong>Summary</strong>
+                </Table.Summary.Cell>
+                <Table.Summary.Cell>
+                  <Tag color="green">Present: {present}</Tag>
+                  <Tag color="red" style={{ marginLeft: 8 }}>
+                    Absent: {absent}
+                  </Tag>
+                </Table.Summary.Cell>
+                <Table.Summary.Cell>
+                  <strong>Total: {total}</strong>
+                </Table.Summary.Cell>
+              </Table.Summary.Row>
+            </Table.Summary>
+          );
+        }}
       />
     </div>
   );
